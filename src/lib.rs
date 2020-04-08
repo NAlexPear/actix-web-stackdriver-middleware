@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use futures::{future, Future};
 use serde::{Serialize, Serializer};
 use std::{
+    collections::HashMap,
     marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
@@ -147,6 +148,9 @@ impl<B> From<&ServiceResponse<B>> for ResponseDescriptors {
 struct Log<'a> {
     // TODO: use tracing instead once nested fields enabled
     // https://github.com/tokio-rs/tracing/issues/663
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    #[serde(flatten)]
+    fields: HashMap<&'static str, &'static str>,
     http_request: &'a HttpDescriptors,
     severity: Level,
     #[serde(serialize_with = "Serializers::to_rfc3339")]
@@ -154,7 +158,24 @@ struct Log<'a> {
 }
 
 /// `actix_web` middleware for transforming hyper services into logs to stdout.
-pub struct RequestLogger;
+#[derive(Default)]
+pub struct RequestLogger {
+    fields: HashMap<&'static str, &'static str>,
+}
+
+impl RequestLogger {
+    /// initialize a default RequestLogger
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// add a custom field to top-level log output
+    pub fn field(mut self, key: &'static str, value: &'static str) -> Self {
+        self.fields.insert(key, value);
+
+        self
+    }
+}
 
 impl<S, B> Transform<S> for RequestLogger
 where
@@ -170,12 +191,15 @@ where
     type Future = future::Ready<Result<Self::Transform, Self::InitError>>;
 
     fn new_transform(&self, service: S) -> Self::Future {
-        future::ok(LoggerMiddleware { service })
+        let fields = self.fields.clone(); // TODO: avoid this
+
+        future::ok(LoggerMiddleware { service, fields })
     }
 }
 
 /// Service that intercepts other Services for request and response parsing
 pub struct LoggerMiddleware<S> {
+    fields: HashMap<&'static str, &'static str>,
     service: S,
 }
 
@@ -195,8 +219,10 @@ where
 
     fn call(&mut self, request: Self::Request) -> Self::Future {
         let request_descriptors = RequestDescriptors::from(&request);
+        let fields = std::mem::take(&mut self.fields);
 
         LoggerResponse {
+            fields,
             future: self.service.call(request),
             request_descriptors,
             _t: PhantomData,
@@ -211,6 +237,7 @@ where
     B: MessageBody,
     S: Service,
 {
+    fields: HashMap<&'static str, &'static str>,
     #[pin]
     future: S::Future,
     request_descriptors: RequestDescriptors,
@@ -228,6 +255,7 @@ where
         let projected = self.project();
         let response = futures::ready!(projected.future.poll(context));
         let request_descriptors = projected.request_descriptors.clone(); // TODO: avoid this
+        let fields = projected.fields.clone(); // TODO: avoid this
 
         Poll::Ready(response.map(|response| {
             let response_descriptors = ResponseDescriptors::from(&response);
@@ -247,6 +275,7 @@ where
             response.map_body(move |_, body| {
                 ResponseBody::Body(LogMessage {
                     body,
+                    fields,
                     http_descriptors,
                 })
             })
@@ -257,6 +286,7 @@ where
 /// The message emitted by this middleware through a `ServiceResponse`
 pub struct LogMessage<B> {
     body: ResponseBody<B>,
+    fields: HashMap<&'static str, &'static str>,
     http_descriptors: HttpDescriptors,
 }
 
@@ -264,8 +294,10 @@ impl<B> Drop for LogMessage<B> {
     fn drop(&mut self) {
         let severity = Level::from(&self.http_descriptors.response.status);
         let time = &self.http_descriptors.response.time;
+        let fields = std::mem::take(&mut self.fields);
         let log = Log {
             http_request: &self.http_descriptors,
+            fields,
             severity,
             time,
         };
