@@ -1,3 +1,8 @@
+/*!
+`actix_web` middleware for logging Stackdriver-compatible
+[`LogEntry`](https://cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry) to `stdout`
+*/
+#![deny(missing_docs)]
 use actix_web::{
     body::BodySize,
     dev::{MessageBody, ResponseBody, Service, ServiceRequest, ServiceResponse, Transform},
@@ -12,8 +17,6 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-
-const SERVICE: &str = "hub";
 
 /// Custom serializers for those types that don't impl Serialize themselves
 struct Serializers;
@@ -145,13 +148,12 @@ struct Log<'a> {
     // TODO: use tracing instead once nested fields enabled
     // https://github.com/tokio-rs/tracing/issues/663
     http_request: &'a HttpDescriptors,
-    service: &'static str,
     severity: Level,
     #[serde(serialize_with = "Serializers::to_rfc3339")]
     time: &'a DateTime<Utc>,
 }
 
-/// actix-level middleware for transforming hyper services into logs to stdout
+/// `actix_web` middleware for transforming hyper services into logs to stdout.
 pub struct RequestLogger;
 
 impl<S, B> Transform<S> for RequestLogger
@@ -252,6 +254,7 @@ where
     }
 }
 
+/// The message emitted by this middleware through a `ServiceResponse`
 pub struct LogMessage<B> {
     body: ResponseBody<B>,
     http_descriptors: HttpDescriptors,
@@ -263,7 +266,6 @@ impl<B> Drop for LogMessage<B> {
         let time = &self.http_descriptors.response.time;
         let log = Log {
             http_request: &self.http_descriptors,
-            service: SERVICE,
             severity,
             time,
         };
