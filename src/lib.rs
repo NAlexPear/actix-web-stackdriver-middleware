@@ -158,7 +158,7 @@ struct Log<'a> {
 }
 
 /// `actix_web` middleware for transforming hyper services into logs to stdout.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct RequestLogger {
     fields: HashMap<&'static str, &'static str>,
 }
